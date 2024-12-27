@@ -356,11 +356,8 @@ int main(int argc, char *argv[])
 	prog_parms.ectp_user_data = ectp_data;
 	prog_parms.ectp_user_data_size = sizeof(ectp_data);
 
-	ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
-    if (ret != 0) {
-        fprintf(stderr, "Failed to open sockets\n");
-        return ret;
-    }
+	open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
+    
 
 	prepare_thread_args(&tx_thread_args, &rx_thread_args, &prog_parms,
 		&tx_sockfd, &rx_sockfd);
@@ -372,8 +369,15 @@ int main(int argc, char *argv[])
 	ectpping_pid = getpid();
 
 	ret = pthread_attr_init(&threads_attrs);
+	if (ret != 0) {
+        fprintf(stderr, "Failed to initialize thread attributes\n");
+        return ret;
+    }
 	ret = pthread_attr_setschedpolicy(&threads_attrs, SCHED_FIFO);
-
+	if (ret != 0) {
+        fprintf(stderr, "Failed to set thread scheduling policy\n");
+        return ret;
+    }
 	ret = pthread_create(&tx_thread_hdl, &threads_attrs, (void *)tx_thread,
 		&tx_thread_args);
 	ret = pthread_create(&rx_thread_hdl, &threads_attrs, (void *)rx_thread,
