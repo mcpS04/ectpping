@@ -874,12 +874,19 @@ enum DO_IFREQ_IOCTL do_ifreq_ioctl(const int ioctl_request,
 {
 	int sockfd;
 	int ioctlret;
+	int enable = 1;
 
 
 
-	sockfd = socket(PF_PACKET, SOCK_DGRAM, 0);
+	sockfd = socket(AF_PACKET, SOCK_RAW, 0);
 	if (sockfd == -1)
 		return DO_IFREQ_IOCTL_BADSOCKET;
+
+	
+	if (setsockopt(sockfd, SOL_SOCKET, SO_TIMESTAMP, &enable, sizeof(enable)) < 0) {
+    	perror("setsockopt");
+    	exit(EXIT_FAILURE);
+	}	
 
 	memset(ifr, 0, sizeof(struct ifreq));
 
@@ -1331,17 +1338,37 @@ void rx_new_packet(int *rx_sockfd,
 {
 	struct sockaddr_ll sa_ll;
 	unsigned int sa_ll_len;
-
+	struct msghdr msg;
+    struct iovec iov;
+    char control[1024];
+    struct cmsghdr *cmsg;
 
 	memset(pkt_buf, 0, pkt_buf_sz);
 
 	sa_ll_len = sizeof(sa_ll);
 
-	*pkt_len = recvfrom(*rx_sockfd, pkt_buf, pkt_buf_sz,
-		0, (struct sockaddr *) &sa_ll,
-		(socklen_t *) &sa_ll_len );
+	iov.iov_base = pkt_buf;
+    iov.iov_len = pkt_buf_sz;
+    msg.msg_name = &sa_ll;
+    msg.msg_namelen = sa_ll_len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    msg.msg_flags = 0;
 
-	ioctl(*rx_sockfd, SIOCGSTAMP, pkt_arrived);
+	*pkt_len = recvmsg(*rx_sockfd, &msg, 0);
+    if (*pkt_len < 0) {
+        perror("recvmsg");
+        return;
+    }
+
+	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP) {
+            memcpy(pkt_arrived, CMSG_DATA(cmsg), sizeof(struct timeval));
+            break;
+        }
+    }
 
 	memcpy(srcmac, sa_ll.sll_addr, sizeof(struct ether_addr));
 
