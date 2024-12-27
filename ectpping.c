@@ -351,13 +351,16 @@ int main(int argc, char *argv[])
 	int ret;
 	pthread_attr_t threads_attrs;
 
-
 	get_prog_parms(argc, argv, &prog_parms);
 
 	prog_parms.ectp_user_data = ectp_data;
 	prog_parms.ectp_user_data_size = sizeof(ectp_data);
 
-	open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
+	ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to open sockets\n");
+        return ret;
+    }
 
 	prepare_thread_args(&tx_thread_args, &rx_thread_args, &prog_parms,
 		&tx_sockfd, &rx_sockfd);
