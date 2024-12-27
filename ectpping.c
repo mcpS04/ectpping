@@ -376,15 +376,34 @@ int main(int argc, char *argv[])
 	ret = pthread_attr_setschedpolicy(&threads_attrs, SCHED_FIFO);
 	if (ret != 0) {
         fprintf(stderr, "Failed to set thread scheduling policy\n");
+        pthread_attr_destroy(&threads_attrs);
+		return ret;
+    }
+	
+	// Create the transmitter thread
+    ret = pthread_create(&tx_thread_hdl, &threads_attrs, (void *(*)(void *))tx_thread,
+        &tx_thread_args);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to create tx thread\n");
+        pthread_attr_destroy(&threads_attrs);
         return ret;
     }
-	ret = pthread_create(&tx_thread_hdl, &threads_attrs, (void *)tx_thread,
-		&tx_thread_args);
-	ret = pthread_create(&rx_thread_hdl, &threads_attrs, (void *)rx_thread,
-		&rx_thread_args);
-	ret = pthread_join(tx_thread_hdl, NULL);
-	ret = pthread_join(rx_thread_hdl, NULL);
 
+    // Create the receiver thread
+    ret = pthread_create(&rx_thread_hdl, &threads_attrs, (void *(*)(void *))rx_thread,
+        &rx_thread_args);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to create rx thread\n");
+        pthread_attr_destroy(&threads_attrs);
+        return ret;
+    }
+	
+	 // Wait for threads to finish
+    pthread_join(tx_thread_hdl, NULL);
+    pthread_join(rx_thread_hdl, NULL);
+
+	pthread_attr_destroy(&threads_attrs);
+	
 	close_sockets(&tx_sockfd, &rx_sockfd);
 
 	return EXIT_SUCCESS;
