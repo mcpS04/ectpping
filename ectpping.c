@@ -350,18 +350,19 @@ int main(int argc, char *argv[])
         __VERSION__;
     int ret;
     pthread_attr_t threads_attrs;
-    pthread_t tx_thread_hdl, rx_thread_hdl;
+	pthread_t rx_thread_hdl;
 
     get_prog_parms(argc, argv, &prog_parms);
 
     prog_parms.ectp_user_data = ectp_data;
     prog_parms.ectp_user_data_size = sizeof(ectp_data);
 
-    ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
-    if (ret != 0) {
-        fprintf(stderr, "Failed to open sockets\n");
-        return ret;
-    }
+	ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
+	if (ret != 0) {
+		perror("Failed to open sockets");
+		close_sockets(&tx_sockfd, &rx_sockfd);
+		return EXIT_FAILURE;
+	}
 
     prepare_thread_args(&tx_thread_args, &rx_thread_args, &prog_parms,
         &tx_sockfd, &rx_sockfd);
@@ -385,13 +386,15 @@ int main(int argc, char *argv[])
         return ret;
     }
 
-    // Create the transmitter thread
-    ret = pthread_create(&tx_thread_hdl, &threads_attrs, tx_thread, &tx_thread_args);
-    if (ret != 0) {
-        fprintf(stderr, "Failed to create tx thread\n");
-        pthread_attr_destroy(&threads_attrs);
-        return ret;
-    }
+	// Create the transmitter thread
+	ret = pthread_create(&tx_thread_hdl, &threads_attrs, tx_thread, &tx_thread_args);
+	if (ret != 0) {
+		fprintf(stderr, "Failed to create tx thread\n");
+		if (pthread_attr_destroy(&threads_attrs) != 0) {
+			fprintf(stderr, "Failed to destroy thread attributes\n");
+		}
+		return ret;
+	}
 
     // Create the receiver thread
     ret = pthread_create(&rx_thread_hdl, &threads_attrs, rx_thread, &rx_thread_args);
