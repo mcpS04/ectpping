@@ -489,67 +489,50 @@ void set_sigint_hdlr(struct sigaction *sigint_action)
  */
 void sigint_hdlr(int signum)
 {
+    pthread_cancel(tx_thread_hdl);
 
+    if (rxed_pkts != txed_pkts)
+        usleep(100000); /* 100ms delay to try to catch an in-flight pkt */
 
-	pthread_cancel(tx_thread_hdl);
+    pthread_cancel(rx_thread_hdl);
 
-	if (rxed_pkts != txed_pkts)
-		usleep(100000); /* 100ms delay to try to catch an in flight
-				 * pkts */
+    if (prog_parms.fwdaddrs != NULL)
+        free(prog_parms.fwdaddrs);
 
-	pthread_cancel(rx_thread_hdl);
+    putchar('\n');
 
-	if (prog_parms.fwdaddrs != NULL)
-		free(prog_parms.fwdaddrs);
+    fflush(NULL);
 
-	putchar('\n');
+    printf("---- ");
+    print_ethaddr_hostname(&prog_parms.dstmac, !prog_parms.no_resolve);
+    printf(" ECTPPING Statistics ----\n");
 
-	fflush(NULL);
+    pthread_mutex_lock(&stats_mutex);
+    printf("%d packets transmitted, %d packets received", txed_pkts, rxed_pkts);
+    if (txed_pkts > 0) {
+        if (rxed_pkts <= txed_pkts)
+            printf(", %f%% packet loss\n", ((txed_pkts - rxed_pkts) / (txed_pkts * 1.0)) * 100);
+        else
+            printf(", %.2f times packet increase\n", (rxed_pkts / (txed_pkts * 1.0)));
 
+        if (rxed_pkts > 0) {
+            long sum_rtts_sec_avg = (sum_rtts.tv_sec * 1000000) / rxed_pkts;
+            printf("round-trip (sec)  min/avg/max/total = "
+                   "%ld.%06ld/%ld.%06ld/%ld.%06ld/%ld.%06ld\n",
+                   min_rtt.tv_sec, min_rtt.tv_usec,
+                   sum_rtts.tv_sec / rxed_pkts,
+                   (sum_rtts_sec_avg < 1000000 ? (sum_rtts.tv_usec / rxed_pkts) + sum_rtts_sec_avg : sum_rtts.tv_usec / rxed_pkts),
+                   max_rtt.tv_sec, max_rtt.tv_usec,
+                   sum_rtts.tv_sec, sum_rtts.tv_usec);
+        }
+    } else {
+        putchar('\n');
+    }
+    pthread_mutex_unlock(&stats_mutex);
 
-	printf("---- ");
+    fflush(NULL);
 
-	print_ethaddr_hostname(&prog_parms.dstmac,
-		!prog_parms.no_resolve);
-
-	printf(" ECTPPING Statistics ----\n");
-
-
-	printf("%d packets transmitted, %d packets received", txed_pkts,
-		rxed_pkts);
-		
-	if (txed_pkts > 0) {
-		if (rxed_pkts <= txed_pkts) 			
-			printf(", %f%% packet loss\n",
-				((txed_pkts - rxed_pkts) / (txed_pkts * 1.0))
-					* 100);
-		else
-			printf(", %.2f times packet increase\n",
-				(rxed_pkts / (txed_pkts * 1.0)));
-
-		if (rxed_pkts > 0) {
-			long sum_rtts_sec_avg = (sum_rtts.tv_sec * 1000000)/
-				rxed_pkts;
-			
-			printf("round-trip (sec)  min/avg/max/total = "
-				"%ld.%06ld/%ld.%06ld/%ld.%06ld/%ld.%06ld\n",
-				min_rtt.tv_sec, min_rtt.tv_usec,
-				sum_rtts.tv_sec/rxed_pkts,
-				(sum_rtts_sec_avg < 1000000 ?
-					(sum_rtts.tv_usec/rxed_pkts) +
-					sum_rtts_sec_avg :
-					sum_rtts.tv_usec/rxed_pkts),
-				max_rtt.tv_sec, max_rtt.tv_usec,
-				sum_rtts.tv_sec, sum_rtts.tv_usec); 
-		}
-	} else {
-		putchar('\n');
-	}
-
-	fflush(NULL);
-
-	exit(EXIT_SUCCESS);
-
+    exit(EXIT_SUCCESS);
 }
 
 
