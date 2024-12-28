@@ -341,48 +341,52 @@ struct program_parameters prog_parms;
 
 int main(int argc, char *argv[])
 {
-	struct sigaction sigint_action;
-	int tx_sockfd, rx_sockfd;
-	struct tx_thread_arguments tx_thread_args;
-	struct rx_thread_arguments rx_thread_args;
-	unsigned char ectp_data[] =
-		__BASE_FILE__ ", built " __TIMESTAMP__ ", using GCC version "
-		__VERSION__;
-	int ret;
-	pthread_attr_t threads_attrs;
+    struct sigaction sigint_action;
+    int tx_sockfd, rx_sockfd;
+    struct tx_thread_arguments tx_thread_args;
+    struct rx_thread_arguments rx_thread_args;
+    unsigned char ectp_data[] =
+        __BASE_FILE__ ", built " __TIMESTAMP__ ", using GCC version "
+        __VERSION__;
+    int ret;
+    pthread_attr_t threads_attrs;
+    pthread_t tx_thread_hdl, rx_thread_hdl;
 
-	get_prog_parms(argc, argv, &prog_parms);
+    get_prog_parms(argc, argv, &prog_parms);
 
-	prog_parms.ectp_user_data = ectp_data;
-	prog_parms.ectp_user_data_size = sizeof(ectp_data);
+    prog_parms.ectp_user_data = ectp_data;
+    prog_parms.ectp_user_data_size = sizeof(ectp_data);
 
-	open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
-    
+    ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
+    if (ret != 0) {
+        fprintf(stderr, "Failed to open sockets\n");
+        return ret;
+    }
 
-	prepare_thread_args(&tx_thread_args, &rx_thread_args, &prog_parms,
-		&tx_sockfd, &rx_sockfd);
+    prepare_thread_args(&tx_thread_args, &rx_thread_args, &prog_parms,
+        &tx_sockfd, &rx_sockfd);
 
-	setup_sigint_hdlr(&sigint_action);
+    setup_sigint_hdlr(&sigint_action);
 
-	print_prog_header(&prog_parms);
+    print_prog_header(&prog_parms);
 
-	ectpping_pid = getpid();
+    ectpping_pid = getpid();
 
-	ret = pthread_attr_init(&threads_attrs);
-	if (ret != 0) {
+    ret = pthread_attr_init(&threads_attrs);
+    if (ret != 0) {
         fprintf(stderr, "Failed to initialize thread attributes\n");
         return ret;
     }
-	ret = pthread_attr_setschedpolicy(&threads_attrs, SCHED_FIFO);
-	if (ret != 0) {
+
+    ret = pthread_attr_setschedpolicy(&threads_attrs, SCHED_FIFO);
+    if (ret != 0) {
         fprintf(stderr, "Failed to set thread scheduling policy\n");
         pthread_attr_destroy(&threads_attrs);
-		return ret;
+        return ret;
     }
-	
-	// Create the transmitter thread
-    ret = pthread_create(&tx_thread_hdl, &threads_attrs, (void *(*)(void *))tx_thread,
-        &tx_thread_args);
+
+    // Create the transmitter thread
+    ret = pthread_create(&tx_thread_hdl, &threads_attrs, tx_thread, &tx_thread_args);
     if (ret != 0) {
         fprintf(stderr, "Failed to create tx thread\n");
         pthread_attr_destroy(&threads_attrs);
@@ -390,26 +394,23 @@ int main(int argc, char *argv[])
     }
 
     // Create the receiver thread
-    ret = pthread_create(&rx_thread_hdl, &threads_attrs, (void *(*)(void *))rx_thread,
-        &rx_thread_args);
+    ret = pthread_create(&rx_thread_hdl, &threads_attrs, rx_thread, &rx_thread_args);
     if (ret != 0) {
         fprintf(stderr, "Failed to create rx thread\n");
         pthread_attr_destroy(&threads_attrs);
         return ret;
     }
-	
-	 // Wait for threads to finish
+
+    // Wait for threads to finish
     pthread_join(tx_thread_hdl, NULL);
     pthread_join(rx_thread_hdl, NULL);
 
-	pthread_attr_destroy(&threads_attrs);
-	
-	close_sockets(&tx_sockfd, &rx_sockfd);
+    pthread_attr_destroy(&threads_attrs);
 
-	return EXIT_SUCCESS;
+    close_sockets(&tx_sockfd, &rx_sockfd);
 
+    return EXIT_SUCCESS;
 }
-
 
 /*
  * Setup things needed for the sigint handler
@@ -977,14 +978,38 @@ enum GET_IFMAC get_ifmac(const char iface[IFNAMSIZ],
 /*
  * Routine to open TX and RX PF_PACKET sockets
  */
-void open_sockets(int *tx_sockfd, int *rx_sockfd, const int ifindex)
-{
+int open_sockets(int *tx_sockfd, int *rx_sockfd, int ifindex) {
+    struct sockaddr_ll sa_ll;
 
+    // Create the transmit socket
+    *tx_sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    if (*tx_sockfd == -1) {
+        perror("socket");
+        return -1;
+    }
 
-	open_tx_socket(tx_sockfd, ifindex);
+    // Create the receive socket
+    *rx_sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    if (*rx_sockfd == -1) {
+        perror("socket");
+        close(*tx_sockfd);
+        return -1;
+    }
 
-	open_rx_socket(rx_sockfd, ifindex);
+    // Bind the receive socket to the interface
+    memset(&sa_ll, 0, sizeof(sa_ll));
+    sa_ll.sll_family = AF_PACKET;
+    sa_ll.sll_ifindex = ifindex;
+    sa_ll.sll_protocol = htons(ETH_P_ALL);
 
+    if (bind(*rx_sockfd, (struct sockaddr *)&sa_ll, sizeof(sa_ll)) == -1) {
+        perror("bind");
+        close(*tx_sockfd);
+        close(*rx_sockfd);
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -1086,49 +1111,48 @@ enum BUILD_ECTP_FRAME build_ectp_frame(
 /*
  * ECTP frame sender thread
  */
-void tx_thread(struct tx_thread_arguments *tx_thread_args)
-{
-	uint8_t tx_frame_buf[0xffff];
-	unsigned int ectp_frame_len;
-	struct ectpping_payload eping_payload = {
-		.seq_num = 0,
-	};
-	
+void *tx_thread(void *arg) {
+    struct tx_thread_arguments *tx_args = (struct tx_thread_arguments *)arg;
+    uint8_t tx_frame_buf[0xffff];
+    unsigned int ectp_frame_len;
+    struct ectpping_payload eping_payload = {
+        .seq_num = 0,
+    };
 
-	while (true) {
+    while (true) {
+        gettimeofday(&eping_payload.tv, NULL);
 
-		gettimeofday(&eping_payload.tv, NULL);
+        build_ectp_frame(tx_args->prog_parms, tx_frame_buf,
+            sizeof(tx_frame_buf), (uint8_t *)&eping_payload,
+            sizeof(struct ectpping_payload),
+            &ectp_frame_len);
 
-		build_ectp_frame(tx_thread_args->prog_parms, tx_frame_buf,
-			sizeof(tx_frame_buf), (uint8_t *)&eping_payload,
-			sizeof(struct ectpping_payload),
-			&ectp_frame_len);
+        send(*tx_args->tx_sockfd, tx_frame_buf, ectp_frame_len,
+            MSG_DONTWAIT);
 
-		send(*tx_thread_args->tx_sockfd, tx_frame_buf, ectp_frame_len,
-			MSG_DONTWAIT);	
+        printf("Sending packet: seq_num=%u, timestamp=%ld.%06ld\n",
+            eping_payload.seq_num, (long)eping_payload.tv.tv_sec, (long)eping_payload.tv.tv_usec);
 
-		txed_pkts++;
+        txed_pkts++;
 
-		eping_payload.seq_num++;
+        eping_payload.seq_num++;
 
-		usleep(tx_thread_args->prog_parms->interval_ms * 1000);
+        usleep(tx_args->prog_parms->interval_ms * 1000);
+    }
 
-	}
-
+    return NULL;
 }
-
 
 /*
  * ECTP frame receiver thread
  */
-void rx_thread(struct rx_thread_arguments *rx_thread_args)
-{
-
-
-	process_rxed_frames(rx_thread_args->rx_sockfd,
-		rx_thread_args->prog_parms);
-
+void *rx_thread(void *arg) {
+    struct rx_thread_arguments *rx_args = (struct rx_thread_arguments *)arg;
+    process_rxed_frames(rx_args->rx_sockfd, rx_args->prog_parms);
+    return NULL;
 }
+
+
 
 
 /*
@@ -1313,41 +1337,53 @@ void print_ectp_src_rt(const struct ectp_packet *ectp_pkt, bool resolve)
 /*
  * Wait for incoming ECTP frames, and print their details when received
  */
-void process_rxed_frames(int *rx_sockfd,
-			 const struct program_parameters *prog_parms)
-{
-	unsigned char pkt_buf[0xffff];
-	unsigned char rxed_pkt_type;
-	unsigned int rxed_pkt_len;
-	struct ether_addr srcmac;
-	uint8_t *ectp_data;
-	unsigned int ectp_data_size;
-	struct timeval pkt_arrived;
+void process_rxed_frames(int sockfd, struct program_parameters *prog_parms) {
+    struct timeval tv;
+    struct msghdr msg;
+    struct iovec iov;
+    char buf[2048];
+    char control[1024];
+    struct cmsghdr *cmsg;
+    struct sockaddr_ll sa_ll;
+    unsigned int sa_ll_len;
+    unsigned char pkt_type;
+    unsigned int pkt_len;
+    struct ether_addr srcmac;
 
+    while (true) {
+        iov.iov_base = buf;
+        iov.iov_len = sizeof(buf);
+        msg.msg_name = &sa_ll;
+        msg.msg_namelen = sizeof(sa_ll);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+        msg.msg_flags = 0;
 
-	while (true) {
+        pkt_len = recvmsg(sockfd, &msg, 0);
+        if (pkt_len < 0) {
+            perror("recvmsg");
+            continue;
+        }
 
-		rx_new_packet(rx_sockfd, pkt_buf, sizeof(pkt_buf),
-			&pkt_arrived, &rxed_pkt_type, &rxed_pkt_len,
-			&srcmac);
+        // Extract the timestamp
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP) {
+                memcpy(&tv, CMSG_DATA(cmsg), sizeof(tv));
+                break;
+            }
+        }
 
-		if (ectp_pkt_valid((struct ectp_packet *)pkt_buf,
-			rxed_pkt_len, prog_parms, &ectp_data,
-			&ectp_data_size) ==
-			ECTP_PKT_VALID_GOOD) {
+        memcpy(&srcmac, sa_ll.sll_addr, sizeof(struct ether_addr));
+        pkt_type = sa_ll.sll_pkttype;
 
-			rxed_pkts++;
+        printf("Received packet: src_mac=%s, length=%u, timestamp=%ld.%06ld\n",
+            ether_ntoa(&srcmac), pkt_len, (long)tv.tv_sec, (long)tv.tv_usec);
 
-			print_rxed_packet(prog_parms, &pkt_arrived,
-				&srcmac, rxed_pkt_len,
-				(struct ectp_packet *)pkt_buf,
-				ectp_data,
-				ectp_data_size);
-
-		}
-
-	}
-
+        // Process the received packet
+        // process_packet(buf, pkt_len);
+    }
 }
 
 
