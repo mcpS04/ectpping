@@ -358,9 +358,11 @@ int main(int argc, char *argv[])
     prog_parms.ectp_user_data_size = sizeof(ectp_data);
 
 	ret = open_sockets(&tx_sockfd, &rx_sockfd, prog_parms.ifindex);
-	if (ret != 0) {
+	if (ret == -1) {
 		perror("Failed to open sockets");
-		close_sockets(&tx_sockfd, &rx_sockfd);
+		if (tx_sockfd != -1 || rx_sockfd != -1) {
+			close_sockets(&tx_sockfd, &rx_sockfd);
+		}
 		return EXIT_FAILURE;
 	}
 
