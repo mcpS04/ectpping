@@ -237,9 +237,9 @@ enum BUILD_ECTP_FRAME build_ectp_frame(
 				   const unsigned int prog_data_size,
 				   unsigned int *ectp_frame_len);
 
-void tx_thread(struct tx_thread_arguments *tx_thread_args);
+void *tx_thread(struct tx_thread_arguments *tx_thread_args);
 
-void rx_thread(struct rx_thread_arguments *rx_thread_args);
+void *rx_thread(struct rx_thread_arguments *rx_thread_args);
 
 enum ECTP_PKT_VALID {
 	ECTP_PKT_VALID_GOOD,
@@ -1337,7 +1337,7 @@ void print_ectp_src_rt(const struct ectp_packet *ectp_pkt, bool resolve)
 /*
  * Wait for incoming ECTP frames, and print their details when received
  */
-void process_rxed_frames(int sockfd, struct program_parameters *prog_parms) {
+void process_rxed_frames(int *rx_sockfd, struct program_parameters *prog_parms) {
     struct timeval tv;
     struct msghdr msg;
     struct iovec iov;
@@ -1361,7 +1361,7 @@ void process_rxed_frames(int sockfd, struct program_parameters *prog_parms) {
         msg.msg_controllen = sizeof(control);
         msg.msg_flags = 0;
 
-        pkt_len = recvmsg(sockfd, &msg, 0);
+        pkt_len = recvmsg(*rx_sockfd, &msg, 0);
         if (pkt_len < 0) {
             perror("recvmsg");
             continue;
